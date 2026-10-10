@@ -1,0 +1,45 @@
+{
+  "name": "webinfoys-sms-platform-server",
+  "version": "0.1.0",
+  "description": "Backend for the Webinfoys SMS Automation Platform",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "seed:admin": "node utils/seedAdmin.js",
+    "test": "node --test --test-reporter=spec \"test/unit/*.test.js\" \"test/api/*.test.js\" \"test/worker/*.test.js\"",
+    "test:unit": "node --test --test-reporter=spec \"test/unit/*.test.js\"",
+    "test:api": "node --test --test-reporter=spec \"test/api/*.test.js\"",
+    "test:worker": "node --test --test-reporter=spec \"test/worker/*.test.js\"",
+    "test:syntax": "node -e \"const{execFileSync}=require('child_process'),{readdirSync,statSync}=require('fs'),p=require('path');let n=0;(function walk(d){for(const e of readdirSync(d)){if(e==='node_modules')continue;const f=p.join(d,e);if(statSync(f).isDirectory())walk(f);else if(e.endsWith('.js')){execFileSync(process.execPath,['--check',f]);n++;}}})('.');console.log('syntax OK: '+n+' files');\""
+  },
+  "keywords": [
+    "sms",
+    "automation",
+    "webinfoys"
+  ],
+  "author": "Webinfoys",
+  "license": "UNLICENSED",
+  "private": true,
+  "type": "commonjs",
+  "engines": {
+    "node": ">=24.21.0 <25"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "exceljs": "^4.4.0",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.6.2",
+    "helmet": "^8.3.0",
+    "jsonwebtoken": "^9.0.3",
+    "mongoose": "^9.9.3",
+    "multer": "^2.2.0",
+    "node-cron": "^4.6.0",
+    "twilio": "^6.1.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}

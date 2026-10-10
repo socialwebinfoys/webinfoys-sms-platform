@@ -1,0 +1,20 @@
+# SPA routing for Apache (Hostinger) — Phase 0, item K.
+#
+# This is a single-page app: the server has no /inbox or /contacts directory, so
+# Apache would return 404 when a visitor refreshes or opens a deep link directly.
+# These rules serve index.html for any path that is not a real file or directory,
+# letting React Router resolve the route on the client.
+#
+# Static assets are unaffected: the !-f and !-d conditions below mean an existing
+# file (/assets/index-*.js, /favicon.svg, ...) is always served as itself and
+# never rewritten. Files in client/public/ are copied verbatim into dist/ by
+# Vite, so this lands at the web root of the deployed build.
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+  RewriteRule ^index\.html$ - [L]
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteCond %{REQUEST_FILENAME} !-d
+  RewriteRule . /index.html [L]
+</IfModule>

@@ -1,0 +1,56 @@
+# Dependencies
+node_modules/
+
+# Environment / secrets (NEVER commit)
+# server/.env holds the real MongoDB Atlas URI, the Twilio credentials and the
+# JWT signing key. The negations below keep the committed *.example templates,
+# which contain placeholders only.
+.env
+*.env
+.env.*
+!.env.example
+!*.env.example
+!.env.example.*
+
+# Build output
+dist/
+build/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Runtime / OS / editor
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*~
+
+# Tool-specific LOCAL state (shared tool config stays committable)
+.claude/settings.local.json
+
+# Local temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*.orig
+
+# Uploads (runtime user files)
+server/uploads/
+
+# DB configuration state (MONGO_URI change-detection fingerprint; a one-way
+# hash only, never the URI itself — but it is per-environment, so it is local)
+server/.db-state.json
+server/db-state.json
+.db-state.json
+
+# Test / coverage output
+coverage/
+.nyc_output/
