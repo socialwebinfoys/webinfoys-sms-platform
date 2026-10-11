@@ -359,11 +359,14 @@ describe('validateConfig — production gates (Stage 11)', () => {
   });
 
   test('production rejects a CORS origin a browser could never send', () => {
-    for (const bad of ['https://app.example.com/', 'https://app.example.com/login', 'app.example.com']) {
+    for (const bad of ['https://app.example.com/login', 'https://app.example.com/?x=1', 'app.example.com']) {
       assert.match(validateWith({ CORS_ORIGIN: bad }), /not a bare origin/, bad);
     }
-    assert.match(validateWith({ CORS_ORIGIN: 'https://app.example.com,https://b.example.com/' }), /1 entry that is not a bare origin/);
+    assert.match(validateWith({ CORS_ORIGIN: 'https://app.example.com,https://b.example.com/app' }), /1 entry that is not a bare origin/);
     assert.equal(validateWith({ CORS_ORIGIN: 'https://app.example.com, https://staging.example.com:8443' }), null);
+    // A trailing slash or capitals are normalized to what a browser sends,
+    // rather than silently never matching.
+    assert.equal(validateWith({ CORS_ORIGIN: 'https://App.Example.com/' }), null);
   });
 
   test('on Render a non-production NODE_ENV refuses to start', () => {

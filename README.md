@@ -593,7 +593,7 @@ committed; `server/.env` is git-ignored and is not used on Render.
 | `MONGO_URI` | secret | The production database |
 | `JWT_SECRET` | secret, 32+ characters | Changing it signs everyone out |
 | `JWT_EXPIRES_IN` | `7d` | Seven-day login session. `7d` is also the default if unset |
-| `CORS_ORIGIN` | the frontend origin | `https://host`, no path, no trailing slash; comma-separate several |
+| `CORS_ORIGIN` | `https://sms.webinfoys.com` | The frontend origin: `https://host`, no path; comma-separate several. `https://sms.webinfoys.com` is always allowed in addition |
 | `PUBLIC_API_URL` | this service's public https URL | Required |
 | `TWILIO_WEBHOOK_BASE_URL` | **the same URL** as `PUBLIC_API_URL` | Required; startup fails if the two differ |
 | `TWILIO_ACCOUNT_SID` | secret | |
@@ -616,7 +616,8 @@ the variable, never its value): `MONGO_URI`, `JWT_SECRET` (32+), `CORS_ORIGIN`
 (no `*`, bare origins only), `PUBLIC_API_URL` and `TWILIO_WEBHOOK_BASE_URL`
 (https, identical), and webhook signature validation switched on.
 
-**Frontend:** build with `VITE_API_URL=https://<api-host>/api npm run build` and
+**Frontend:** build with `VITE_API_URL=https://sms-api.webinfoys.com/api npm run build`
+(the `/api` suffix is added automatically if it is left off) and
 upload `client/dist` to the static host. `client/.env*` files are git-ignored.
 
 **Shutdown and restarts.** On `SIGTERM` the server stops accepting connections,

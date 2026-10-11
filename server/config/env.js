@@ -7,16 +7,45 @@ require('dotenv').config({ quiet: true });
 // the Hostinger site and a staging/preview origin without reopening to '*'.
 // Entries are trimmed and blanks dropped; a bare '*' anywhere means "allow all"
 // (rejected in production by validateConfig below).
+//
+// A browser sends an origin as scheme://host[:port] — lower-case, no path, no
+// trailing slash — and it is compared as an exact string. So an entry written
+// "https://Sms.Example.com/" is normalized to what the browser will actually
+// send; otherwise it could never match and the site would be locked out with
+// nothing but a "CORS error" in the browser. An entry with a real path is left
+// as written (it is not an origin) and is rejected in production.
+function normalizeOrigin(entry) {
+  const value = String(entry).trim();
+  if (value === '*') return value;
+  try {
+    const url = new URL(value);
+    if ((url.pathname === '/' || url.pathname === '') && !url.search && !url.hash) return url.origin;
+  } catch (e) {
+    // Not a URL at all; left as written for validateConfig to report.
+  }
+  return value;
+}
+
 function parseOrigins(raw) {
   const list = String(raw === undefined || raw === null ? '' : raw)
     .split(',')
     .map((o) => o.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .map(normalizeOrigin);
   return [...new Set(list)];
 }
 
+// The production frontend. It is ALWAYS on the allow-list, whatever CORS_ORIGIN
+// holds, so a deployment whose environment was left at a development value
+// (CORS_ORIGIN=http://localhost:5173) still serves the real site instead of
+// refusing it. An exact origin — never a pattern, never a wildcard.
+const BUILT_IN_CORS_ORIGINS = ['https://sms.webinfoys.com'];
+
 const rawCorsOrigin = process.env.CORS_ORIGIN || '*';
 const corsOrigins = parseOrigins(rawCorsOrigin);
+// What the CORS middleware actually checks: the configured origins plus the
+// built-in production frontend.
+const corsAllowedOrigins = [...new Set([...corsOrigins.filter((o) => o !== '*'), ...BUILT_IN_CORS_ORIGINS])];
 
 // Read an integer setting where ZERO IS A REAL VALUE.
 //
@@ -45,6 +74,9 @@ const config = {
   // `corsAllowAll` is the wildcard shortcut used in local development.
   corsOrigin: rawCorsOrigin,
   corsOrigins,
+  // `corsOrigins` plus the built-in production frontend: the list the CORS
+  // middleware checks a browser's Origin header against.
+  corsAllowedOrigins,
   corsAllowAll: corsOrigins.includes('*'),
   // Optional. When set (e.g. "+1"), phone numbers imported without a country
   // code are assumed to belong to this country. If unset, such numbers are

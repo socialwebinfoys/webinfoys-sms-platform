@@ -26,6 +26,14 @@ async function start() {
   try {
     validateConfig();
 
+    // Origins are public addresses, not secrets — printing the allow-list makes
+    // a wrong CORS_ORIGIN visible in the host's log.
+    console.log(
+      config.corsAllowAll
+        ? 'CORS: every origin is allowed (development wildcard).'
+        : `CORS: allowed browser origins: ${config.corsAllowedOrigins.join(', ')}`
+    );
+
     // Resolved once the database is connected, the admin user is verified and
     // the workers are started. Until then the app holds API requests; if
     // startup fails the process exits (below), exactly as before.

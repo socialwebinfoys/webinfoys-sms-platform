@@ -35,12 +35,49 @@ const aiRoutes = require('./routes/aiRoutes');
 // A disallowed browser origin gets `cb(null, false)` — the response simply
 // carries no CORS headers, so the browser blocks it. We deliberately do not
 // throw, which would surface as a confusing 500.
+//
+// PREFLIGHT. The frontend is on a different origin from the API and sends JSON
+// with an Authorization header, so the browser asks permission first with an
+// OPTIONS request. The cors middleware answers that itself (204) for every
+// path, before any route, authentication or rate limiter runs — a preflight
+// carries no token and must never be counted as a login attempt. The methods
+// and headers below are exactly what the client uses.
+//
+// CREDENTIALS are deliberately NOT enabled: the session is a bearer token in the
+// Authorization header, not a cookie, so `Access-Control-Allow-Credentials` is
+// never sent — and therefore never combined with a wildcard origin.
+const CORS_METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'];
+const CORS_ALLOWED_HEADERS = ['Content-Type', 'Authorization'];
+// How long a browser may reuse a preflight answer, in seconds.
+const CORS_PREFLIGHT_MAX_AGE = 600;
+// Refused origins are logged once each (bounded), so a misconfigured
+// CORS_ORIGIN shows up in the server log instead of only in a browser console.
+const MAX_REFUSED_ORIGINS_LOGGED = 20;
+
 function buildCorsOptions() {
-  if (config.corsAllowAll) return { origin: '*' };
+  const shared = {
+    methods: CORS_METHODS,
+    allowedHeaders: CORS_ALLOWED_HEADERS,
+    maxAge: CORS_PREFLIGHT_MAX_AGE,
+    optionsSuccessStatus: 204,
+  };
+  if (config.corsAllowAll) return { ...shared, origin: '*' };
+
+  const refusedLogged = new Set();
   return {
+    ...shared,
     origin(origin, cb) {
       if (!origin) return cb(null, true);
-      return cb(null, config.corsOrigins.includes(origin));
+      const allowed = config.corsAllowedOrigins.includes(origin);
+      if (!allowed && !refusedLogged.has(origin) && refusedLogged.size < MAX_REFUSED_ORIGINS_LOGGED) {
+        refusedLogged.add(origin);
+        console.warn(
+          `CORS: refused browser origin ${JSON.stringify(String(origin).slice(0, 200))}. ` +
+            `Allowed origins: ${config.corsAllowedOrigins.join(', ')}. ` +
+            'Set CORS_ORIGIN to the exact frontend origin (scheme://host, no path).'
+        );
+      }
+      return cb(null, allowed);
     },
   };
 }
