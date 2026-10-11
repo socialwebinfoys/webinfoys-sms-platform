@@ -45,7 +45,11 @@ function buildCorsOptions() {
   };
 }
 
-function createApp() {
+// `ready` (optional) is a promise that resolves when startup has finished —
+// database connected, admin verified, workers started. index.js listens BEFORE
+// that work so a managed host sees listen() immediately; see the startup gate
+// below. Tests and tools that build the app without it get no gate.
+function createApp({ ready } = {}) {
   const app = express();
 
   // Phase 0: in production this API sits behind exactly one proxy (Render's
@@ -84,6 +88,34 @@ function createApp() {
       timestamp: new Date().toISOString(),
     });
   });
+
+  // Startup gate. The port is bound before the database is connected, so a
+  // request can arrive during those first seconds. It is HELD here, not
+  // refused, and continues the moment startup completes — a Twilio webhook
+  // that lands mid-start is processed normally rather than lost. Every route
+  // below (auth, rate limiting, webhook signature checks) is unchanged and
+  // only ever runs against a fully started app. The health check above is
+  // deliberately not gated. If startup fails the process exits; the 503 is
+  // only for a request that was already waiting at that moment.
+  if (ready && typeof ready.then === 'function') {
+    let started = false;
+    ready.then(
+      () => {
+        started = true;
+      },
+      () => {}
+    );
+    app.use((req, res, next) => {
+      if (started) return next();
+      return ready.then(
+        () => next(),
+        () =>
+          res
+            .status(503)
+            .json({ success: false, message: 'The server is starting up. Please try again shortly.' })
+      );
+    });
+  }
 
   // Feature routes.
   app.use('/api/auth', authRoutes);
