@@ -17,6 +17,7 @@ const aiService = require('../services/ai/aiService');
 
 const MAX_LIMIT = 100;
 const PREVIEW_LEN = 140;
+const OBJECT_ID_RE = /^[0-9a-fA-F]{24}$/;
 
 function escapeRegex(str) {
   return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -27,8 +28,33 @@ function escapeRegex(str) {
 // so nothing historical is hidden by accident.
 const NOT_DELETED = { deletedAt: null };
 
+// Twilio's two terminal failure states — the same set the status callback
+// treats as failures (webhookController FAILURE_STATUSES). Terminal states never
+// overwrite one another, so a message that was delivered can never also carry
+// one of these.
+const UNDELIVERED_STATUSES = ['undelivered', 'failed'];
+
+// Contacts that have at least one visible outbound message that failed. One
+// distinct() over the { status, contact } index — failed messages are a small
+// slice of the log — rather than a per-conversation lookup.
+async function contactsWithUndelivered() {
+  return SMSMessage.distinct('contact', {
+    direction: 'outbound',
+    status: { $in: UNDELIVERED_STATUSES },
+    ...NOT_DELETED,
+  });
+}
+
+// Contacts whose consent is currently withdrawn — the authoritative
+// Contact.optedOut flag (keyword STOP, operator toggle or carrier 21610), never
+// a guess from message text. A contact who later sent START is opted back in
+// and is not listed; their STOP message stays in the thread history regardless.
+async function contactsOptedOut() {
+  return Contact.distinct('_id', { optedOut: true });
+}
+
 // Build the conversation list filter from the query string (Phase 4).
-function buildConversationFilter(req) {
+async function buildConversationFilter(req) {
   const filter = { ...NOT_DELETED };
 
   if (req.query.status === 'open' || req.query.status === 'closed') {
@@ -49,6 +75,19 @@ function buildConversationFilter(req) {
     else if (a === 'none') filter.assignedTo = null;
     else filter.assignedTo = a;
   }
+  // delivery=undelivered | optedOut=true narrow by contact. Both may be given;
+  // the thread must then satisfy both.
+  const contactSets = [];
+  if (req.query.delivery === 'undelivered') contactSets.push(await contactsWithUndelivered());
+  if (req.query.optedOut === 'true') contactSets.push(await contactsOptedOut());
+  if (contactSets.length) {
+    let ids = contactSets[0];
+    for (const other of contactSets.slice(1)) {
+      const keep = new Set(other.map(String));
+      ids = ids.filter((id) => keep.has(String(id)));
+    }
+    filter.contact = { $in: ids };
+  }
   // Search the denormalized contact name/phone. Regex (not $text) so partial
   // phone numbers match; the input is escaped so it cannot inject a pattern.
   if (req.query.search && String(req.query.search).trim()) {
@@ -60,18 +99,22 @@ function buildConversationFilter(req) {
 }
 
 // GET /api/conversations
-// Filters: status, unread, needsReply, assigned, search; paginated.
+// Filters: status, unread, needsReply, assigned, delivery, optedOut, search;
+// paginated.
 async function listConversations(req, res, next) {
   try {
     const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), MAX_LIMIT);
     const skip = (page - 1) * limit;
 
-    const filter = buildConversationFilter(req);
+    const filter = await buildConversationFilter(req);
 
     const [items, total] = await Promise.all([
       Conversation.find(filter)
-        .sort({ lastMessageAt: -1 }) // most recent activity first
+        // Most recent activity first. _id breaks ties, so threads sharing a
+        // lastMessageAt (bulk sends) have one fixed order and paging can never
+        // show one twice or skip one.
+        .sort({ lastMessageAt: -1, _id: -1 })
         .skip(skip)
         .limit(limit)
         .populate('contact', 'name phone optedOut deliveryBlocked')
@@ -195,13 +238,27 @@ async function getMessages(req, res, next) {
       if (Number.isNaN(before.getTime())) {
         return res.status(400).json({ success: false, message: 'Invalid "before" timestamp' });
       }
-      // Strictly older, so the boundary message is never returned twice.
-      filter.createdAt = { $lt: before };
+      if (req.query.beforeId !== undefined) {
+        // Cursor = (createdAt, _id) of the oldest message held. Messages that
+        // share the boundary's timestamp (one bulk send) are split by _id, so
+        // none is skipped and none is returned twice.
+        if (!OBJECT_ID_RE.test(String(req.query.beforeId))) {
+          return res.status(400).json({ success: false, message: 'Invalid "beforeId"' });
+        }
+        filter.$or = [
+          { createdAt: { $lt: before } },
+          { createdAt: before, _id: { $lt: String(req.query.beforeId) } },
+        ];
+      } else {
+        // Legacy timestamp-only cursor: strictly older.
+        filter.createdAt = { $lt: before };
+      }
     }
 
     // Fetch one extra row to tell the client whether more history exists.
+    // Same (createdAt, _id) order as the cursor.
     const [found, total] = await Promise.all([
-      SMSMessage.find(filter).sort({ createdAt: -1 }).limit(limit + 1),
+      SMSMessage.find(filter).sort({ createdAt: -1, _id: -1 }).limit(limit + 1),
       SMSMessage.countDocuments({ contact: convo.contact, ...NOT_DELETED }),
     ]);
 
@@ -216,6 +273,8 @@ async function getMessages(req, res, next) {
       // hasMore means "older messages exist before this page".
       hasMore,
       oldest: page.length ? page[0].createdAt : null,
+      // Send both back as before/beforeId to load the next older page.
+      oldestId: page.length ? page[0]._id : null,
       newest: page.length ? page[page.length - 1].createdAt : null,
       pagination: { limit, total, returned: page.length },
     });
@@ -596,7 +655,6 @@ async function deleteConversation(req, res, next) {
 // place. Contacts, campaigns, enrollments and follow-ups are never touched.
 
 const BULK_DELETE_MAX = 500;
-const OBJECT_ID_RE = /^[0-9a-fA-F]{24}$/;
 
 function deletedBy(req) {
   return req.user ? req.user._id : undefined;

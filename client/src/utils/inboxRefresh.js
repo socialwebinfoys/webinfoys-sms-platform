@@ -21,11 +21,16 @@ export function refreshOptionLabel(seconds) {
 }
 
 // Merge incoming messages into the loaded set: updates existing rows (a status
-// change), adds new ones, and never duplicates. Always chronological.
+// change), adds new ones, and never duplicates. Always chronological; messages
+// sharing a timestamp keep the server's (createdAt, _id) order.
 export function mergeMessages(prev, incoming) {
   const map = new Map(prev.map((m) => [m._id, m]));
   incoming.forEach((m) => map.set(m._id, m));
-  return [...map.values()].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+  return [...map.values()].sort(
+    (a, b) =>
+      new Date(a.createdAt) - new Date(b.createdAt) ||
+      (String(a._id) < String(b._id) ? -1 : String(a._id) > String(b._id) ? 1 : 0)
+  );
 }
 
 // One Inbox refresh, single-flight: while a refresh is running, further calls

@@ -1454,20 +1454,24 @@ select.input option {
    14. Inbox
    ------------------------------------------------------------------ */
 .inbox-layout {
+  position: relative;
   display: flex;
-  gap: 16px;
+  gap: 14px;
   align-items: stretch;
-  height: calc(100vh - 196px);
-  min-height: 440px;
+  flex: 1 1 auto;
+  min-height: 420px;
+  min-width: 0;
 }
 .convo-list {
-  flex: 0 0 344px;
+  flex: 0 0 320px;
+  min-width: 0;
+  min-height: 0;
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   background: var(--glass-bg);
   -webkit-backdrop-filter: var(--glass-blur);
   backdrop-filter: var(--glass-blur);
-  overflow-y: auto;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   box-shadow: var(--shadow-sm), var(--glass-highlight);
@@ -1644,7 +1648,9 @@ select.input option {
   box-shadow: 0 0 10px rgba(47, 111, 237, 0.5);
 }
 .convo-detail {
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   background: var(--glass-bg);
@@ -1659,7 +1665,8 @@ select.input option {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 14px 18px;
+  flex: 0 0 auto;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--border);
   gap: 10px;
   flex-wrap: wrap;
@@ -1674,8 +1681,10 @@ select.input option {
   flex-wrap: wrap;
 }
 .msg-thread {
-  flex: 1;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 18px;
   display: flex;
   flex-direction: column;
@@ -1717,6 +1726,7 @@ select.input option {
   margin-top: 5px;
 }
 .reply-box {
+  flex: 0 0 auto;
   border-top: 1px solid var(--border);
   padding: 14px;
   background: rgba(255, 255, 255, 0.02);
@@ -1836,17 +1846,6 @@ select.input option {
   .row-actions {
     gap: 5px;
   }
-  .inbox-layout {
-    flex-direction: column;
-    height: auto;
-  }
-  .convo-list {
-    flex: 0 0 auto;
-    max-height: 44vh;
-  }
-  .convo-detail {
-    min-height: 60vh;
-  }
   .modal {
     max-width: 100%;
   }
@@ -1915,11 +1914,12 @@ select.input option {
 }
 /* Floating "jump to latest" affordance above the composer. */
 .jump-latest {
-  position: relative;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 10px;
   display: flex;
   justify-content: center;
-  margin-top: -34px;
-  margin-bottom: 8px;
   pointer-events: none;
 }
 .jump-latest .btn {
@@ -1945,7 +1945,11 @@ select.input option {
 }
 /* Right-hand contact / automation panel. */
 .contact-panel {
-  flex: 0 0 290px;
+  position: relative;
+  flex: 0 0 300px;
+  min-width: 0;
+  min-height: 0;
+  overscroll-behavior: contain;
   border: 1px solid var(--border);
   border-radius: var(--r-lg);
   background: var(--glass-bg);
@@ -1989,14 +1993,263 @@ select.input option {
   font-weight: 700;
   text-align: center;
 }
-@media (max-width: 1100px) {
-  /* The panel becomes a stacked drawer rather than a third column. */
+
+/* ---- Inbox workspace -------------------------------------------------
+   The Inbox fills the viewport below the mobile top bar and never scrolls as
+   a page on a normal screen: the conversation list, the thread and the contact
+   panel each scroll on their own. Every flex child that holds a scroller has
+   min-height: 0 / min-width: 0, without which it would grow to fit its content
+   and push the composer off the screen. Only on a very short window (below the
+   layout's min-height) does the page scroll, so nothing is ever clipped. */
+.content.content-wide {
+  max-width: none;
+  /* A fixed height, not .content's flex: 1 — a flex item's automatic minimum
+     height would otherwise let it grow to fit every row it contains. */
+  flex: none;
+  min-height: 0;
+  height: 100vh;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  padding: 20px 24px 18px;
+  overflow-y: auto;
+}
+.inbox-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.inbox-page > .page-head {
+  flex: 0 0 auto;
+  margin-bottom: 14px;
+}
+.inbox-page > .alert {
+  flex: 0 0 auto;
+}
+/* Collapsed panels stay mounted (selection, page and scroll position are
+   kept) and are simply not displayed. */
+.convo-list[hidden],
+.contact-panel[hidden] {
+  display: none !important;
+}
+
+/* Conversation list: search + filter on top, rows scroll, pager at the foot. */
+.convo-list-head {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.convo-list-search {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.convo-list-search .input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.convo-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.convo-filter-row .convo-filter {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-top: 7px;
+  padding-bottom: 7px;
+}
+.convo-count {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.convo-list-head .convo-bulk {
+  padding: 6px 2px 0;
+  border-bottom: none;
+}
+.convo-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.convo-pager {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  gap: 10px;
+}
+
+/* Chat header: list toggle · who · controls · details toggle. */
+.detail-who {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.detail-who strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.panel-toggle {
+  flex: 0 0 auto;
+  border-color: var(--border);
+}
+.panel-toggle[aria-expanded="true"] {
+  color: var(--brand-400);
+  background: var(--brand-tint);
+  border-color: var(--brand-line);
+}
+.panel-toggle:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.panel-toggle:disabled:hover {
+  background: transparent;
+  color: var(--muted);
+}
+.msg-thread-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.convo-detail > .alert {
+  flex: 0 0 auto;
+  margin: 10px 12px 0;
+}
+.convo-detail > .state {
+  flex: 1 1 auto;
+}
+
+/* Close buttons inside a panel exist for drawer mode only. */
+.drawer-close {
+  display: none;
+  flex: 0 0 auto;
+}
+.panel-close {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+.contact-panel .panel-close + h3 {
+  margin-top: 0;
+}
+.inbox-scrim {
+  display: none;
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: rgba(5, 7, 12, 0.55);
+  border-radius: var(--r-lg);
+}
+
+/* Below 1280px the details panel becomes a drawer over the chat's right edge;
+   the chat keeps its full width. */
+@media (max-width: 1280px) {
   .contact-panel {
-    flex: 1 1 auto;
-    max-height: 40vh;
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(340px, 92%);
+    z-index: 6;
+    background: var(--glass-bg-strong);
+    box-shadow: var(--shadow-lg), var(--glass-highlight);
+    padding-top: 44px;
+    animation: fade-in 140ms ease;
   }
+  .contact-panel .drawer-close {
+    display: inline-flex;
+  }
+  .details-open .inbox-scrim {
+    display: block;
+  }
+  .convo-list {
+    flex-basis: 288px;
+  }
+}
+
+@media (max-width: 1024px) {
+  .content.content-wide {
+    height: calc(100vh - var(--topbar-h));
+    height: calc(100dvh - var(--topbar-h));
+    padding: 14px 16px 14px;
+  }
+}
+
+/* Below 900px the conversation list is a drawer too, and the chat always gets
+   the whole width. */
+@media (max-width: 900px) {
   .inbox-layout {
-    flex-wrap: wrap;
+    gap: 0;
+    min-height: 360px;
+  }
+  .convo-list {
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: min(360px, 92%);
+    z-index: 6;
+    background: var(--glass-bg-strong);
+    box-shadow: var(--shadow-lg), var(--glass-highlight);
+    animation: fade-in 140ms ease;
+  }
+  .convo-list .drawer-close {
+    display: inline-flex;
+  }
+  .list-open .inbox-scrim {
+    display: block;
+  }
+}
+
+@media (max-width: 680px) {
+  .content.content-wide {
+    padding: 10px 10px 10px;
+  }
+  .inbox-page > .page-head {
+    margin-bottom: 10px;
+  }
+  .inbox-page .page-sub {
+    display: none;
+  }
+  .detail-head {
+    padding: 8px;
+    gap: 8px;
+  }
+  /* Controls drop to ONE row under the name so neither is squeezed, and the
+     thread keeps as much height as possible. */
+  .detail-controls {
+    order: 3;
+    width: 100%;
+    flex-wrap: nowrap;
+  }
+  .detail-controls select.input {
+    flex: 1 1 auto;
+    width: auto;
+    min-width: 0;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+  .detail-controls .btn {
+    flex: 0 0 auto;
+  }
+  .msg-thread {
+    padding: 12px;
+  }
+  .bubble {
+    max-width: 86%;
+  }
+  .reply-box {
+    padding: 10px;
   }
 }
 

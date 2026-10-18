@@ -254,7 +254,12 @@ export default function Layout({ children }) {
           </button>
           <div className="brand-word">Webinfoys SMS</div>
         </header>
-        <main className="content" key={location.pathname}>
+        {/* The Inbox is a workspace, not a document: it takes the full width
+            and exactly the viewport height, and scrolls inside its panels. */}
+        <main
+          className={`content${location.pathname === '/inbox' ? ' content-wide' : ''}`}
+          key={location.pathname}
+        >
           {children}
         </main>
       </div>

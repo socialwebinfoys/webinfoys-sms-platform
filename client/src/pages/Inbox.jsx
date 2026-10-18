@@ -2,7 +2,11 @@
 // that opens on the NEWEST messages and loads older on demand, live polling, a
 // composer with segment counting and templates, retry for failed sends, admin
 // soft delete, and a contact/automation side panel.
-import { Fragment, useEffect, useState, useCallback, useRef } from 'react';
+//
+// Layout: a full-height workspace. The conversation list (left) and the contact
+// details (right) collapse independently — see utils/inboxLayout.js — and only
+// the list, the thread and the details scroll, never the page.
+import { Fragment, useEffect, useLayoutEffect, useState, useCallback, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import api from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -34,6 +38,24 @@ import {
   requestDeleteSelected,
   requestDeleteAll,
 } from '../utils/inboxSelection';
+import {
+  INBOX_FILTERS,
+  DEFAULT_INBOX_FILTER,
+  inboxFilter,
+  conversationListParams,
+  emptyListMessage,
+} from '../utils/inboxFilters';
+import {
+  NARROW_QUERY,
+  COMPACT_QUERY,
+  toggleLabel,
+  readStoredLayout,
+  writeStoredLayout,
+  layoutFor,
+  afterSelect,
+  overlaysOpen,
+  togglePanel as flipPanel,
+} from '../utils/inboxLayout';
 
 const InboxIcon = (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -81,15 +103,52 @@ function dayLabel(d) {
   return date.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' });
 }
 
-const FILTERS = [
-  { key: 'all', label: 'All', params: {} },
-  { key: 'unread', label: 'Unread', params: { unread: 'true' } },
-  { key: 'needsReply', label: 'Needs reply', params: { needsReply: 'true' } },
-  { key: 'mine', label: 'Assigned to me', params: { assigned: 'me' } },
-  { key: 'closed', label: 'Closed', params: { status: 'closed' } },
-];
+// Panel toggles: a frame with its left or right column marked, like the
+// sidebar icons in most editors.
+const PanelLeftIcon = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="M9 4v16" />
+  </svg>
+);
+const PanelRightIcon = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="M15 4v16" />
+  </svg>
+);
+const CloseIcon = (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <path d="M6 6l12 12M18 6L6 18" />
+  </svg>
+);
 
 const PAGE_SIZE = 50;
+const LIST_LIMIT = 20;
+
+// useLayoutEffect in the browser (scroll is restored before paint, so nothing
+// jumps); plain useEffect where there is no DOM, e.g. a server render.
+const useIsomorphicLayoutEffect =
+  typeof document !== 'undefined' && typeof document.createElement === 'function' ? useLayoutEffect : useEffect;
+
+// matchMedia, tolerating environments without it (server render, tests).
+function mediaList(query) {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+    ? window.matchMedia(query)
+    : null;
+}
+function useMediaQuery(query) {
+  const [matches, setMatches] = useState(() => !!mediaList(query)?.matches);
+  useEffect(() => {
+    const list = mediaList(query);
+    if (!list || !list.addEventListener) return undefined;
+    const onChange = () => setMatches(list.matches);
+    onChange();
+    list.addEventListener('change', onChange);
+    return () => list.removeEventListener('change', onChange);
+  }, [query]);
+  return matches;
+}
 
 export default function Inbox() {
   const { user } = useAuth();
@@ -98,7 +157,7 @@ export default function Inbox() {
   const [conversations, setConversations] = useState([]);
   const [pagination, setPagination] = useState({ page: 1, limit: 20, total: 0, pages: 0 });
   const [page, setPage] = useState(1);
-  const [filterKey, setFilterKey] = useState('all');
+  const [filterKey, setFilterKey] = useState(DEFAULT_INBOX_FILTER);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [listLoading, setListLoading] = useState(false);
@@ -128,7 +187,20 @@ export default function Inbox() {
   const [newTemplateName, setNewTemplateName] = useState('');
 
   const [enrollments, setEnrollments] = useState([]);
-  const [panelOpen, setPanelOpen] = useState(true);
+
+  // Which side panels are open (see utils/inboxLayout.js). Independent of the
+  // selected conversation: toggling never opens, closes or reloads a thread.
+  const narrow = useMediaQuery(NARROW_QUERY);
+  const compact = useMediaQuery(COMPACT_QUERY);
+  const widthClass = narrow ? 'narrow' : compact ? 'compact' : 'wide';
+  const [layout, setLayout] = useState(() =>
+    layoutFor({
+      narrow: !!mediaList(NARROW_QUERY)?.matches,
+      compact: !!mediaList(COMPACT_QUERY)?.matches,
+      hasSelection: false,
+      stored: readStoredLayout(),
+    })
+  );
   const [confirm, setConfirm] = useState(null); // { type:'message'|'chat'|'bulk'|'all', message? }
   // Bulk selection (admin only — deletion is admin-only). Visible rows only.
   const [selectedIds, setSelectedIds] = useState(() => new Set());
@@ -150,6 +222,18 @@ export default function Inbox() {
   const [refreshing, setRefreshing] = useState(false);
 
   const threadRef = useRef(null);
+  const atBottomRef = useRef(true);
+  // Scroll height/position just before an older page is added (load older).
+  const olderAnchorRef = useRef(null);
+  atBottomRef.current = atBottom;
+  // The two side panels' scrollers, so collapsing and re-opening one returns it
+  // to where the operator was.
+  const listScrollRef = useRef(null);
+  const panelRef = useRef(null);
+  const savedScroll = useRef({ list: 0, details: 0 });
+  // Only the newest list request may update the list: switching filters
+  // quickly, or a poll landing mid-switch, can never show stale results.
+  const listSeqRef = useRef(0);
   const selectedIdRef = useRef(null);
   // The latest list loader, read by the refresher so the polling timer does not
   // have to be rebuilt every time the search, filter or page changes.
@@ -164,24 +248,33 @@ export default function Inbox() {
     return () => clearTimeout(t);
   }, [search]);
 
-  const listParams = useCallback(() => {
-    const f = FILTERS.find((x) => x.key === filterKey) || FILTERS[0];
-    return { ...f.params, search: debouncedSearch || undefined, page, limit: 20 };
-  }, [filterKey, debouncedSearch, page]);
+  const listParams = useCallback(
+    () => conversationListParams({ filterKey, search: debouncedSearch, page, limit: LIST_LIMIT }),
+    [filterKey, debouncedSearch, page]
+  );
 
   const fetchList = useCallback(async ({ quiet = false } = {}) => {
+    const seq = ++listSeqRef.current;
     if (!quiet) setListLoading(true);
     setListError('');
     try {
       const { data } = await api.get('/conversations', { params: listParams() });
+      if (seq !== listSeqRef.current) return;
       setConversations(data.data);
       setPagination(data.pagination);
     } catch (err) {
+      if (seq !== listSeqRef.current) return;
       setListError(err.response?.data?.message || 'Failed to load conversations');
     } finally {
-      if (!quiet) setListLoading(false);
+      // Whichever request is newest ends the loading state, quiet or not.
+      if (seq === listSeqRef.current) setListLoading(false);
     }
   }, [listParams]);
+
+  const changeFilter = (key) => {
+    setFilterKey(inboxFilter(key).key);
+    setPage(1);
+  };
 
   useEffect(() => { fetchList(); }, [fetchList]);
   fetchListRef.current = fetchList;
@@ -214,6 +307,8 @@ export default function Inbox() {
 
   const openConversation = async (id) => {
     setSelectedId(id);
+    // Where the list is a drawer over the chat, picking a thread closes it.
+    setLayout((prev) => afterSelect(prev, { narrow }));
     setDetailLoading(true);
     setDetailError('');
     setReplyError('');
@@ -263,16 +358,16 @@ export default function Inbox() {
     setLoadingOlder(true);
     try {
       const { data } = await api.get(`/conversations/${selectedId}/messages`, {
-        params: { limit: PAGE_SIZE, before: messages[0].createdAt },
+        // (createdAt, _id) cursor: messages sharing the boundary timestamp are
+        // neither skipped nor repeated.
+        params: { limit: PAGE_SIZE, before: messages[0].createdAt, beforeId: messages[0]._id },
       });
+      // Keep the reading position steady instead of jumping to the top: the
+      // layout effect below re-applies it as soon as the older page renders.
       const el = threadRef.current;
-      const prevHeight = el ? el.scrollHeight : 0;
+      if (el) olderAnchorRef.current = { height: el.scrollHeight, top: el.scrollTop };
       setMessages((prev) => mergeMessages(prev, data.data));
       setHasOlder(!!data.hasMore);
-      // Keep the reading position steady instead of jumping to the top.
-      requestAnimationFrame(() => {
-        if (el) el.scrollTop = el.scrollHeight - prevHeight;
-      });
     } catch (err) {
       setDetailError(err.response?.data?.message || 'Failed to load older messages');
     } finally {
@@ -340,17 +435,100 @@ export default function Inbox() {
   };
 
   // Stay pinned to the newest message only when already at the bottom, so
-  // polling never yanks someone away from history they are reading.
+  // polling never yanks someone away from history they are reading. Also runs
+  // when the thread first mounts: a conversation's messages arrive while it is
+  // still loading, before the thread element exists, and it must still open on
+  // the newest message.
+  const threadMounted = !!(selectedId && detail && !detailLoading);
+  // After an older page is prepended, keep the same message under the
+  // operator's eyes — applied before paint, so nothing visibly jumps.
+  useIsomorphicLayoutEffect(() => {
+    const anchor = olderAnchorRef.current;
+    const el = threadRef.current;
+    if (!anchor || !el) return;
+    olderAnchorRef.current = null;
+    el.scrollTop = el.scrollHeight - anchor.height + anchor.top;
+  }, [messages]);
   useEffect(() => {
     const el = threadRef.current;
     if (el && atBottom) el.scrollTop = el.scrollHeight;
-  }, [messages, atBottom]);
+  }, [messages, atBottom, threadMounted]);
 
   const onThreadScroll = () => {
     const el = threadRef.current;
     if (!el) return;
     setAtBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 80);
   };
+
+  // ---- side panels -------------------------------------------------------
+  // A new width class (rotating a tablet, resizing the window) re-derives the
+  // layout; a wide screen gets the operator's remembered choice back.
+  const firstWidthRef = useRef(true);
+  useEffect(() => {
+    if (firstWidthRef.current) { firstWidthRef.current = false; return; }
+    setLayout(layoutFor({ narrow, compact, hasSelection: !!selectedIdRef.current, stored: readStoredLayout() }));
+    // Keyed on the width class only; narrow/compact are what it is derived from.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [widthClass]);
+
+  const togglePanel = (panel) => {
+    const key = panel === 'list' ? 'listOpen' : 'detailsOpen';
+    if (layout[key]) {
+      const el = panel === 'list' ? listScrollRef.current : panelRef.current;
+      if (el) savedScroll.current[panel] = el.scrollTop;
+    }
+    const next = flipPanel(layout, panel);
+    setLayout(next);
+    // Remember only choices made where the panel sits beside the chat; opening
+    // a drawer on a phone says nothing about the desktop layout.
+    if (widthClass === 'wide') writeStoredLayout(next);
+    else if (widthClass === 'compact' && panel === 'list') {
+      writeStoredLayout({ ...readStoredLayout(), listOpen: next.listOpen });
+    }
+  };
+
+  const overlays = overlaysOpen(layout, { narrow, compact });
+  const closeOverlays = () =>
+    setLayout((prev) => ({
+      listOpen: overlays.list ? false : prev.listOpen,
+      detailsOpen: overlays.details ? false : prev.detailsOpen,
+    }));
+
+  // Escape closes an open drawer.
+  const anyOverlay = overlays.list || overlays.details;
+  useEffect(() => {
+    if (!anyOverlay) return undefined;
+    const onKey = (e) => {
+      if (e.key === 'Escape') setLayout((prev) => ({ ...prev, ...(narrow ? { listOpen: false } : {}), detailsOpen: false }));
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [anyOverlay, narrow]);
+
+  // A re-opened panel returns to its earlier scroll position, and the thread —
+  // which has just changed width — stays on the newest message if it was there.
+  useIsomorphicLayoutEffect(() => {
+    if (layout.listOpen && listScrollRef.current) listScrollRef.current.scrollTop = savedScroll.current.list;
+  }, [layout.listOpen]);
+  useIsomorphicLayoutEffect(() => {
+    if (layout.detailsOpen && panelRef.current) panelRef.current.scrollTop = savedScroll.current.details;
+  }, [layout.detailsOpen]);
+  useIsomorphicLayoutEffect(() => {
+    const el = threadRef.current;
+    if (el && atBottomRef.current) el.scrollTop = el.scrollHeight;
+  }, [layout.listOpen, layout.detailsOpen]);
+
+  // Any other resize of the thread (window, composer growing) keeps it pinned
+  // to the newest message in the same way.
+  useEffect(() => {
+    const el = threadRef.current;
+    if (!threadMounted || !el || typeof ResizeObserver === 'undefined') return undefined;
+    const ro = new ResizeObserver(() => {
+      if (atBottomRef.current) el.scrollTop = el.scrollHeight;
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [threadMounted, selectedId]);
 
   const jumpToLatest = () => {
     const el = threadRef.current;
@@ -583,8 +761,16 @@ export default function Inbox() {
   const deliveryBlocked = !!contact?.deliveryBlocked;
   const composerDisabled = optedOut || deliveryBlocked;
 
+  const empty = emptyListMessage({ filterKey, search: debouncedSearch });
+  const activeFilter = inboxFilter(filterKey);
+  const layoutClass = [
+    'inbox-layout',
+    layout.listOpen ? 'list-open' : 'list-collapsed',
+    detail && layout.detailsOpen ? 'details-open' : 'details-collapsed',
+  ].join(' ');
+
   return (
-    <div className="page">
+    <div className="page inbox-page">
       <div className="page-head">
         <div>
           <h1>Inbox</h1>
@@ -608,150 +794,175 @@ export default function Inbox() {
         </div>
       </div>
 
-      {/* Search + filter chips */}
-      <div className="filters">
-        <input
-          className="input"
-          placeholder="Search by contact name or phone…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
-        <div className="chip-row">
-          {FILTERS.map((f) => (
-            <button
-              key={f.key}
-              type="button"
-              className={`btn btn-sm ${filterKey === f.key ? 'btn-primary' : ''}`}
-              onClick={() => { setFilterKey(f.key); setPage(1); }}
-            >
-              {f.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
       {notice && <div className="alert alert-info"><div>{notice}</div></div>}
 
-      <div className="inbox-layout">
-        {/* LEFT: conversation list */}
-        <div className="convo-list">
-          {listError && <div className="alert alert-error"><div>{listError}</div></div>}
-          {isAdmin && conversations.length > 0 && !listLoading && (() => {
-            const visibleIds = conversations.map((c) => c._id);
-            const state = selectAllState(selectedIds, visibleIds);
-            return (
-              <div className="convo-bulk">
-                <label className="checkbox-field">
+      <div className={layoutClass}>
+        {/* Drawers (narrow screens) sit over the chat; this closes them. */}
+        {(overlays.list || (overlays.details && detail)) && (
+          <div className="inbox-scrim" onClick={closeOverlays} aria-hidden="true" />
+        )}
+
+        {/* LEFT: conversation list. Kept mounted while collapsed, so the
+            selection, the loaded page and the scroll position all survive. */}
+        <aside
+          id="inbox-conversation-list"
+          className="convo-list"
+          aria-label="Conversations"
+          hidden={!layout.listOpen}
+        >
+          <div className="convo-list-head">
+            <div className="convo-list-search">
+              <input
+                className="input"
+                type="search"
+                aria-label="Search conversations by contact name or phone"
+                placeholder="Search name or phone…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+              <button
+                type="button"
+                className="icon-btn drawer-close"
+                onClick={() => togglePanel('list')}
+                aria-label={toggleLabel('list', true)}
+                title={toggleLabel('list', true)}
+              >
+                {CloseIcon}
+              </button>
+            </div>
+            <div className="convo-filter-row">
+              <label className="sr-only-label" htmlFor="inbox-filter">Show</label>
+              <select
+                id="inbox-filter"
+                className="input convo-filter"
+                value={filterKey}
+                onChange={(e) => changeFilter(e.target.value)}
+              >
+                {INBOX_FILTERS.map((f) => (
+                  <option key={f.key} value={f.key}>{f.label}</option>
+                ))}
+              </select>
+              {/* The server's total for this filter + search: exact, not an
+                  estimate, because it comes from the same query as the rows. */}
+              <span className="muted small convo-count" aria-live="polite">
+                {listLoading ? '…' : `${pagination.total} ${pagination.total === 1 ? 'conversation' : 'conversations'}`}
+              </span>
+            </div>
+            {isAdmin && conversations.length > 0 && !listLoading && (() => {
+              const visibleIds = conversations.map((c) => c._id);
+              const state = selectAllState(selectedIds, visibleIds);
+              return (
+                <div className="convo-bulk">
+                  <label className="checkbox-field">
+                    <input
+                      type="checkbox"
+                      aria-label="Select all conversations on this page"
+                      checked={state === 'all'}
+                      ref={(el) => { if (el) el.indeterminate = state === 'some'; }}
+                      onChange={() => setSelectedIds((prev) => toggleSelectAll(prev, visibleIds))}
+                      disabled={busy}
+                    />
+                    <span>{selectedIds.size > 0 ? `${selectedIds.size} selected` : 'Select all'}</span>
+                  </label>
+                  {selectedIds.size > 0 && (
+                    <div className="row-actions">
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-danger"
+                        onClick={() => setConfirm({ type: 'bulk' })}
+                        disabled={busy}
+                      >
+                        Delete Selected
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-ghost"
+                        onClick={() => setSelectedIds(new Set())}
+                        disabled={busy}
+                      >
+                        Clear Selection
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+          </div>
+
+          <div className="convo-scroll" ref={listScrollRef}>
+            {listError && <div className="alert alert-error"><div>{listError}</div></div>}
+            {listLoading ? (
+              <Spinner label="Loading conversations…" />
+            ) : conversations.length === 0 ? (
+              <EmptyState icon={InboxIcon} title={empty.title} hint={empty.hint} />
+            ) : (
+              conversations.map((c) => {
+                // Name, or the phone when there is no name — never a blank row.
+                const id = contactIdentity(c.contact, c);
+                return (
+                <div key={c._id} className={`convo-row${isAdmin ? ' selectable' : ''}`}>
+                {isAdmin && (
                   <input
                     type="checkbox"
-                    aria-label="Select all conversations on this page"
-                    checked={state === 'all'}
-                    ref={(el) => { if (el) el.indeterminate = state === 'some'; }}
-                    onChange={() => setSelectedIds((prev) => toggleSelectAll(prev, visibleIds))}
+                    className="convo-select"
+                    aria-label={`Select conversation with ${id.title || 'contact'}`}
+                    checked={selectedIds.has(c._id)}
+                    onChange={() => setSelectedIds((prev) => toggleSelected(prev, c._id))}
                     disabled={busy}
                   />
-                  <span>{selectedIds.size > 0 ? `${selectedIds.size} selected` : 'Select all'}</span>
-                </label>
-                {selectedIds.size > 0 && (
-                  <div className="row-actions">
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-danger"
-                      onClick={() => setConfirm({ type: 'bulk' })}
-                      disabled={busy}
-                    >
-                      Delete Selected
-                    </button>
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-ghost"
-                      onClick={() => setSelectedIds(new Set())}
-                      disabled={busy}
-                    >
-                      Clear Selection
-                    </button>
-                  </div>
                 )}
-              </div>
-            );
-          })()}
-          {listLoading ? (
-            <Spinner label="Loading conversations…" />
-          ) : conversations.length === 0 ? (
-            <EmptyState
-              icon={InboxIcon}
-              title={search || filterKey !== 'all' ? 'No matching conversations' : 'No conversations yet'}
-              hint={
-                search || filterKey !== 'all'
-                  ? 'Try a different search or filter.'
-                  : 'Inbound replies and outbound messages will appear here as conversations.'
-              }
-            />
-          ) : (
-            conversations.map((c) => {
-              // Name, or the phone when there is no name — never a blank row.
-              const id = contactIdentity(c.contact, c);
-              return (
-              <div key={c._id} className={`convo-row${isAdmin ? ' selectable' : ''}`}>
-              {isAdmin && (
-                <input
-                  type="checkbox"
-                  className="convo-select"
-                  aria-label={`Select conversation with ${id.title || 'contact'}`}
-                  checked={selectedIds.has(c._id)}
-                  onChange={() => setSelectedIds((prev) => toggleSelected(prev, c._id))}
-                  disabled={busy}
-                />
-              )}
-              <button
-                className={`convo-item ${selectedId === c._id ? 'active' : ''}`}
-                onClick={() => openConversation(c._id)}
-              >
-                <div className="convo-item-top">
-                  <span className="convo-name">{id.title || 'Unknown contact'}</span>
-                  <span className="convo-time muted">{timeAgo(c.lastMessageAt)}</span>
+                <button
+                  className={`convo-item ${selectedId === c._id ? 'active' : ''}`}
+                  onClick={() => openConversation(c._id)}
+                >
+                  <div className="convo-item-top">
+                    <span className="convo-name">{id.title || 'Unknown contact'}</span>
+                    <span className="convo-time muted">{timeAgo(c.lastMessageAt)}</span>
+                  </div>
+                  {/* The phone is secondary — shown only when a name is the title. */}
+                  {id.subtitle && <div className="convo-item-mid muted small">{id.subtitle}</div>}
+                  <div className="convo-preview small">
+                    {c.lastMessageDirection === 'outbound' ? '↩ ' : ''}
+                    {c.lastMessagePreview || <span className="muted">No messages</span>}
+                  </div>
+                  <div className="convo-item-bot">
+                    <span className={`chip ${c.status === 'open' ? 'chip-on' : ''}`}>{c.status}</span>
+                    {c.assignedTo && <span className="chip">{c.assignedTo.name || c.assignedTo.email}</span>}
+                    {c.contact?.optedOut && <span className="chip chip-invalid">opted out</span>}
+                    {c.contact?.deliveryBlocked && <span className="chip chip-warn">blocked</span>}
+                    {c.unreadCount > 0 && <span className="badge-unread">{c.unreadCount}</span>}
+                  </div>
+                </button>
                 </div>
-                {/* The phone is secondary — shown only when a name is the title. */}
-                {id.subtitle && <div className="convo-item-mid muted small">{id.subtitle}</div>}
-                <div className="convo-preview small">
-                  {c.lastMessageDirection === 'outbound' ? '↩ ' : ''}
-                  {c.lastMessagePreview || <span className="muted">No messages</span>}
-                </div>
-                <div className="convo-item-bot">
-                  <span className={`chip ${c.status === 'open' ? 'chip-on' : ''}`}>{c.status}</span>
-                  {c.assignedTo && <span className="chip">{c.assignedTo.name || c.assignedTo.email}</span>}
-                  {c.contact?.optedOut && <span className="chip chip-invalid">opted out</span>}
-                  {c.contact?.deliveryBlocked && <span className="chip chip-warn">blocked</span>}
-                  {c.unreadCount > 0 && <span className="badge-unread">{c.unreadCount}</span>}
-                </div>
-              </button>
-              </div>
-              );
-            })
-          )}
-          <div className="pagination">
+                );
+              })
+            )}
+          </div>
+          <div className="pagination convo-pager">
             <button className="btn btn-sm" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>Prev</button>
             <span className="muted small">Page {pagination.page}/{pagination.pages || 1} ({pagination.total})</span>
             <button className="btn btn-sm" disabled={page >= (pagination.pages || 1)} onClick={() => setPage((p) => p + 1)}>Next</button>
           </div>
-        </div>
+        </aside>
 
-        {/* MIDDLE: conversation detail */}
-        <div className="convo-detail">
-          {!selectedId ? (
-            <EmptyState
-              icon={InboxIcon}
-              title="No conversation selected"
-              hint="Select a conversation from the list to view its messages and reply."
-            />
-          ) : detailLoading ? (
-            <Spinner label="Loading conversation…" />
-          ) : detailError && !detail ? (
-            <div className="alert alert-error"><div>{detailError}</div></div>
-          ) : detail ? (
-            <>
-              <div className="detail-head">
-                <div>
+        {/* MIDDLE: conversation detail. The header is always there, so both
+            panel toggles are reachable even before a thread is chosen. */}
+        <section className="convo-detail" aria-label="Conversation">
+          <div className="detail-head">
+            <button
+              type="button"
+              className="icon-btn panel-toggle"
+              onClick={() => togglePanel('list')}
+              aria-label={toggleLabel('list', layout.listOpen)}
+              title={toggleLabel('list', layout.listOpen)}
+              aria-expanded={layout.listOpen}
+              aria-controls="inbox-conversation-list"
+            >
+              {PanelLeftIcon}
+            </button>
+            <div className="detail-who">
+              {detail && !detailLoading ? (
+                <>
                   <strong>{who.title || 'Unknown contact'}</strong>
                   {who.subtitle && <div className="muted small">{who.subtitle}</div>}
                   {/* Phase 9: the AI state that changes what an operator should
@@ -765,138 +976,168 @@ export default function Inbox() {
                       ))}
                     </div>
                   )}
-                </div>
-                <div className="detail-controls">
-                  <select
-                    className="input input-narrow"
-                    value={detail.assignedTo?._id || detail.assignedTo || ''}
-                    onChange={(e) => changeAssignee(e.target.value)}
-                  >
-                    <option value="">Unassigned</option>
-                    {users.map((u) => (
-                      <option key={u._id} value={u._id}>{u.name || u.email}</option>
-                    ))}
-                  </select>
-                  {detail.status === 'open' ? (
-                    <button className="btn btn-sm" onClick={() => changeStatus('closed')}>Close</button>
-                  ) : (
-                    <button className="btn btn-sm" onClick={() => changeStatus('open')}>Reopen</button>
-                  )}
-                  <button className="btn btn-sm" onClick={() => setPanelOpen((v) => !v)}>
-                    {panelOpen ? 'Hide details' : 'Details'}
+                </>
+              ) : (
+                <span className="muted small">{activeFilter.label}</span>
+              )}
+            </div>
+            {detail && !detailLoading && (
+              <div className="detail-controls">
+                <select
+                  className="input input-narrow"
+                  aria-label="Assign conversation"
+                  value={detail.assignedTo?._id || detail.assignedTo || ''}
+                  onChange={(e) => changeAssignee(e.target.value)}
+                >
+                  <option value="">Unassigned</option>
+                  {users.map((u) => (
+                    <option key={u._id} value={u._id}>{u.name || u.email}</option>
+                  ))}
+                </select>
+                {detail.status === 'open' ? (
+                  <button className="btn btn-sm" onClick={() => changeStatus('closed')}>Close</button>
+                ) : (
+                  <button className="btn btn-sm" onClick={() => changeStatus('open')}>Reopen</button>
+                )}
+                {isAdmin && (
+                  <button className="btn btn-sm btn-danger" onClick={() => setConfirm({ type: 'chat' })}>
+                    Delete chat
                   </button>
-                  {isAdmin && (
-                    <button className="btn btn-sm btn-danger" onClick={() => setConfirm({ type: 'chat' })}>
-                      Delete chat
-                    </button>
-                  )}
-                </div>
+                )}
               </div>
+            )}
+            <button
+              type="button"
+              className="icon-btn panel-toggle"
+              onClick={() => togglePanel('details')}
+              aria-label={toggleLabel('details', !!detail && layout.detailsOpen)}
+              title={detail ? toggleLabel('details', layout.detailsOpen) : 'Select a conversation to see contact details'}
+              aria-expanded={!!detail && layout.detailsOpen}
+              aria-controls="inbox-contact-panel"
+              disabled={!detail}
+            >
+              {PanelRightIcon}
+            </button>
+          </div>
 
+          {!selectedId ? (
+            <EmptyState
+              icon={InboxIcon}
+              title="No conversation selected"
+              hint="Select a conversation from the list to view its messages and reply."
+            />
+          ) : detailLoading ? (
+            <Spinner label="Loading conversation…" />
+          ) : detailError && !detail ? (
+            <div className="alert alert-error"><div>{detailError}</div></div>
+          ) : detail ? (
+            <>
               {detailError && <div className="alert alert-error"><div>{detailError}</div></div>}
 
-              <div className="msg-thread" ref={threadRef} onScroll={onThreadScroll}>
-                {hasOlder && (
-                  <div style={{ textAlign: 'center' }}>
-                    <button className="btn btn-sm" onClick={loadOlder} disabled={loadingOlder}>
-                      {loadingOlder ? 'Loading…' : 'Load older messages'}
-                    </button>
-                  </div>
-                )}
-                {messages.length === 0 ? (
-                  <div className="state"><div className="state-hint">No messages in this conversation yet.</div></div>
-                ) : (
-                  messages.map((m, i) => {
-                    const kw = m.direction === 'inbound' ? keywordOf(m.body) : null;
-                    const prev = i > 0 ? messages[i - 1] : null;
-                    const showDay =
-                      !prev || new Date(prev.createdAt).toDateString() !== new Date(m.createdAt).toDateString();
-                    const canRetry = m.direction === 'outbound' && RETRYABLE.has(String(m.status || '').toLowerCase());
-                    return (
-                      <Fragment key={m._id}>
-                        {showDay && (
-                          <div className="day-sep">
-                            <span>{dayLabel(m.createdAt)}</span>
-                          </div>
-                        )}
-                        <div className={`bubble-row ${m.direction}`}>
-                          <div className={`bubble ${m.direction}`}>
-                            <div className="bubble-body">{m.body}</div>
-                            <div className="bubble-meta">
-                              {/* Phase 9: a message the assistant sent, from the
-                                  existing `source` field. Subtle and only where
-                                  it applies — a human reply carries no badge. */}
-                              {(() => {
-                                const badge = messageBadge(m);
-                                return badge ? (
+              <div className="msg-thread-wrap">
+                <div className="msg-thread" ref={threadRef} onScroll={onThreadScroll}>
+                  {hasOlder && (
+                    <div style={{ textAlign: 'center' }}>
+                      <button className="btn btn-sm" onClick={loadOlder} disabled={loadingOlder}>
+                        {loadingOlder ? 'Loading…' : 'Load older messages'}
+                      </button>
+                    </div>
+                  )}
+                  {messages.length === 0 ? (
+                    <div className="state"><div className="state-hint">No messages in this conversation yet.</div></div>
+                  ) : (
+                    messages.map((m, i) => {
+                      const kw = m.direction === 'inbound' ? keywordOf(m.body) : null;
+                      const prev = i > 0 ? messages[i - 1] : null;
+                      const showDay =
+                        !prev || new Date(prev.createdAt).toDateString() !== new Date(m.createdAt).toDateString();
+                      const canRetry = m.direction === 'outbound' && RETRYABLE.has(String(m.status || '').toLowerCase());
+                      return (
+                        <Fragment key={m._id}>
+                          {showDay && (
+                            <div className="day-sep">
+                              <span>{dayLabel(m.createdAt)}</span>
+                            </div>
+                          )}
+                          <div className={`bubble-row ${m.direction}`}>
+                            <div className={`bubble ${m.direction}`}>
+                              <div className="bubble-body">{m.body}</div>
+                              <div className="bubble-meta">
+                                {/* Phase 9: a message the assistant sent, from the
+                                    existing `source` field. Subtle and only where
+                                    it applies — a human reply carries no badge. */}
+                                {(() => {
+                                  const badge = messageBadge(m);
+                                  return badge ? (
+                                    <>
+                                      <span className={badge.chipClass} title={badge.title}>
+                                        {badge.label}
+                                      </span>
+                                      {' · '}
+                                    </>
+                                  ) : null;
+                                })()}
+                                {m.direction} · {new Date(m.createdAt).toLocaleString()}
+                                {m.direction === 'outbound' && m.status ? (
                                   <>
-                                    <span className={badge.chipClass} title={badge.title}>
-                                      {badge.label}
-                                    </span>
                                     {' · '}
+                                    <span
+                                      className={statusChipClass(m.status)}
+                                      title={m.errorCode ? `Twilio error ${m.errorCode}${m.error ? `: ${m.error}` : ''}` : m.error || m.status}
+                                    >
+                                      {m.status}{m.errorCode ? ` (${m.errorCode})` : ''}
+                                    </span>
                                   </>
-                                ) : null;
-                              })()}
-                              {m.direction} · {new Date(m.createdAt).toLocaleString()}
-                              {m.direction === 'outbound' && m.status ? (
-                                <>
-                                  {' · '}
-                                  <span
-                                    className={statusChipClass(m.status)}
-                                    title={m.errorCode ? `Twilio error ${m.errorCode}${m.error ? `: ${m.error}` : ''}` : m.error || m.status}
-                                  >
-                                    {m.status}{m.errorCode ? ` (${m.errorCode})` : ''}
-                                  </span>
-                                </>
-                              ) : m.status ? ` · ${m.status}` : ''}
-                              {canRetry && (
-                                <>
-                                  {' '}
-                                  <button
-                                    className="btn btn-sm"
-                                    onClick={() => retryMessage(m)}
-                                    disabled={retryingId === m._id}
-                                  >
-                                    {retryingId === m._id ? 'Retrying…' : 'Retry'}
-                                  </button>
-                                </>
-                              )}
-                              {isAdmin && !kw && (
-                                <>
-                                  {' '}
-                                  <button
-                                    className="btn btn-sm btn-ghost"
-                                    title="Delete this message"
-                                    onClick={() => setConfirm({ type: 'message', message: m })}
-                                  >
-                                    ×
-                                  </button>
-                                </>
-                              )}
-                              {isAdmin && kw && (
-                                <span className="muted" title="Opt-out records cannot be deleted"> · kept for compliance</span>
-                              )}
+                                ) : m.status ? ` · ${m.status}` : ''}
+                                {canRetry && (
+                                  <>
+                                    {' '}
+                                    <button
+                                      className="btn btn-sm"
+                                      onClick={() => retryMessage(m)}
+                                      disabled={retryingId === m._id}
+                                    >
+                                      {retryingId === m._id ? 'Retrying…' : 'Retry'}
+                                    </button>
+                                  </>
+                                )}
+                                {isAdmin && !kw && (
+                                  <>
+                                    {' '}
+                                    <button
+                                      className="btn btn-sm btn-ghost"
+                                      title="Delete this message"
+                                      onClick={() => setConfirm({ type: 'message', message: m })}
+                                    >
+                                      ×
+                                    </button>
+                                  </>
+                                )}
+                                {isAdmin && kw && (
+                                  <span className="muted" title="Opt-out records cannot be deleted"> · kept for compliance</span>
+                                )}
+                              </div>
                             </div>
                           </div>
-                        </div>
-                        {kw && (
-                          <div className="bubble-row" style={{ justifyContent: 'center' }}>
-                            <span className={kw === 'stop' ? 'chip chip-invalid' : 'chip chip-on'}>
-                              {kw === 'stop' ? 'Contact opted out (STOP) — sending disabled' : 'Contact opted back in (START)'}
-                            </span>
-                          </div>
-                        )}
-                      </Fragment>
-                    );
-                  })
+                          {kw && (
+                            <div className="bubble-row" style={{ justifyContent: 'center' }}>
+                              <span className={kw === 'stop' ? 'chip chip-invalid' : 'chip chip-on'}>
+                                {kw === 'stop' ? 'Contact opted out (STOP) — sending disabled' : 'Contact opted back in (START)'}
+                              </span>
+                            </div>
+                          )}
+                        </Fragment>
+                      );
+                    })
+                  )}
+                </div>
+
+                {!atBottom && (
+                  <div className="jump-latest">
+                    <button className="btn btn-sm" onClick={jumpToLatest}>↓ Jump to latest</button>
+                  </div>
                 )}
               </div>
-
-              {!atBottom && (
-                <div className="jump-latest">
-                  <button className="btn btn-sm" onClick={jumpToLatest}>↓ Jump to latest</button>
-                </div>
-              )}
 
               <form className="reply-box" onSubmit={sendReply}>
                 {replyError && <div className="alert alert-error"><div>{replyError}</div></div>}
@@ -983,11 +1224,26 @@ export default function Inbox() {
               </form>
             </>
           ) : null}
-        </div>
+        </section>
 
-        {/* RIGHT: contact + automation panel */}
-        {selectedId && detail && panelOpen && (
-          <div className="contact-panel">
+        {/* RIGHT: contact + automation panel. Also kept mounted while hidden. */}
+        {selectedId && detail && (
+          <aside
+            id="inbox-contact-panel"
+            className="contact-panel"
+            aria-label="Contact details"
+            hidden={!layout.detailsOpen}
+            ref={panelRef}
+          >
+            <button
+              type="button"
+              className="icon-btn drawer-close panel-close"
+              onClick={() => togglePanel('details')}
+              aria-label={toggleLabel('details', true)}
+              title={toggleLabel('details', true)}
+            >
+              {CloseIcon}
+            </button>
             <h3>Contact</h3>
             <table className="kv">
               <tbody>
@@ -1081,7 +1337,7 @@ export default function Inbox() {
                 </div>
               ))
             )}
-          </div>
+          </aside>
         )}
       </div>
 

@@ -27,7 +27,13 @@ function clone(v) {
   return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, clone(x)]));
 }
 
-const same = (a, b) => (a == null && b == null) || (a != null && b != null && String(a) === String(b));
+// Dates compare by instant: String(date) drops the milliseconds.
+const same = (a, b) => {
+  if (a instanceof Date || b instanceof Date) {
+    return a != null && b != null && new Date(a).getTime() === new Date(b).getTime();
+  }
+  return (a == null && b == null) || (a != null && b != null && String(a) === String(b));
+};
 
 function valuesAt(doc, path) {
   let cur = [doc];
@@ -165,8 +171,15 @@ function listQuery(rowsFn) {
       return tick().then(() => {
         let rows = rowsFn();
         if (sortSpec) {
-          const [field, dir] = Object.entries(sortSpec)[0];
-          rows = [...rows].sort((a, b) => compare(a[field] ?? '', b[field] ?? '') * dir);
+          // Every key, in order, so a tie-breaker ({ at: -1, _id: -1 }) counts.
+          const keys = Object.entries(sortSpec);
+          rows = [...rows].sort((a, b) => {
+            for (const [field, dir] of keys) {
+              const c = compare(a[field] ?? '', b[field] ?? '') * dir;
+              if (c) return c;
+            }
+            return 0;
+          });
         }
         rows = rows.slice(skipN);
         if (limitN != null) rows = rows.slice(0, limitN);
@@ -221,6 +234,15 @@ function storeModel(name, getRows, setRows, extra = {}) {
       return liveDoc(getRows, made);
     },
     countDocuments: async (filter) => { await tick(); return getRows().filter((d) => matches(d, filter)).length; },
+    // Distinct values of one path among the matching documents.
+    distinct: async (field, filter) => {
+      await tick();
+      const seen = new Map();
+      for (const doc of getRows().filter((x) => matches(x, filter))) {
+        for (const v of valuesAt(doc, field)) if (v != null && !seen.has(String(v))) seen.set(String(v), v);
+      }
+      return [...seen.values()];
+    },
     findOneAndUpdate: async (filter, update) => {
       await tick();
       const doc = getRows().find((d) => matches(d, filter));

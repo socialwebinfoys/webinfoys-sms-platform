@@ -140,6 +140,10 @@ smsMessageSchema.index({ campaign: 1, createdAt: -1 });
 // the CONVERSATION, and a contact's messages are not all in one thread. Additive
 // and backward-compatible; no existing index covers this key.
 smsMessageSchema.index({ conversation: 1, createdAt: -1 });
+// Inbox "Undelivered" filter: the contacts with a failed/undelivered message,
+// via distinct('contact') over a status range — an index scan of just the
+// failed rows instead of the whole message log. Additive and non-unique.
+smsMessageSchema.index({ status: 1, contact: 1 });
 
 smsMessageSchema.methods.toJSON = function toJSON() {
   const obj = this.toObject();

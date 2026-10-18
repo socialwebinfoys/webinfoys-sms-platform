@@ -76,6 +76,9 @@ const conversationSchema = new mongoose.Schema(
 // `contact` unique index is declared above (fast lookup by contact + dup guard).
 // Inbox is sorted by most recent activity:
 conversationSchema.index({ lastMessageAt: -1 });
+// The list sorts { lastMessageAt: -1, _id: -1 } so ties have a fixed order for
+// paging; this index serves that sort directly. Additive — nothing is dropped.
+conversationSchema.index({ lastMessageAt: -1, _id: -1 });
 // Filtered inbox (e.g. only open) still sorted by activity:
 conversationSchema.index({ status: 1, lastMessageAt: -1 });
 // Phase 4: cheap "what changed since X?" polling, served from an index rather
