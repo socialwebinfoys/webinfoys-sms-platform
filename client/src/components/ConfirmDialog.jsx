@@ -7,6 +7,8 @@ export default function ConfirmDialog({
   message,
   confirmLabel = 'Delete',
   busy = false,
+  // Extra gate on the confirm button (e.g. a phrase that must be typed first).
+  confirmDisabled = false,
   danger = true,
   onConfirm,
   onClose,
@@ -22,7 +24,7 @@ export default function ConfirmDialog({
           type="button"
           className={danger ? 'btn btn-danger' : 'btn btn-primary'}
           onClick={onConfirm}
-          disabled={busy}
+          disabled={busy || confirmDisabled}
           autoFocus
         >
           {busy ? 'Working…' : confirmLabel}

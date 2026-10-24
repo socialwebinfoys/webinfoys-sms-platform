@@ -30,13 +30,18 @@ import {
 import {
   DELETE_SELECTED_CONFIRM,
   DELETE_ALL_CONFIRM,
+  DELETE_PRESERVED_NOTE,
+  DELETE_ALL_PHRASE,
+  deleteAllPhraseMatches,
+  deleteSelectedTitle,
+  deleteAllTitle,
+  selectionSummary,
+  requestInboxTotal,
+  runBulkDelete,
   toggleSelected,
   selectAllState,
   toggleSelectAll,
   pruneSelection,
-  afterBulkDelete,
-  requestDeleteSelected,
-  requestDeleteAll,
 } from '../utils/inboxSelection';
 import {
   INBOX_FILTERS,
@@ -201,7 +206,13 @@ export default function Inbox() {
       stored: readStoredLayout(),
     })
   );
-  const [confirm, setConfirm] = useState(null); // { type:'message'|'chat'|'bulk'|'all', message? }
+  // { type:'message'|'chat'|'bulk'|'all', message?, ids? (bulk), total? (all) }
+  const [confirm, setConfirm] = useState(null);
+  // What the operator typed in the Delete All dialog.
+  const [deleteAllTyped, setDeleteAllTyped] = useState('');
+  // A failed bulk delete, shown above the panels so it is visible even with the
+  // conversation list collapsed — and never next to a success message.
+  const [bulkError, setBulkError] = useState('');
   // Bulk selection (admin only — deletion is admin-only). Visible rows only.
   const [selectedIds, setSelectedIds] = useState(() => new Set());
   const bulkLockRef = useRef(false);
@@ -262,6 +273,10 @@ export default function Inbox() {
       if (seq !== listSeqRef.current) return;
       setConversations(data.data);
       setPagination(data.pagination);
+      // The page no longer exists (its rows were deleted, here or elsewhere):
+      // go to the last page that does. The page effect then refetches.
+      const lastPage = Math.max(1, data.pagination?.pages || 1);
+      if (data.data.length === 0 && page > lastPage) setPage(lastPage);
     } catch (err) {
       if (seq !== listSeqRef.current) return;
       setListError(err.response?.data?.message || 'Failed to load conversations');
@@ -269,7 +284,7 @@ export default function Inbox() {
       // Whichever request is newest ends the loading state, quiet or not.
       if (seq === listSeqRef.current) setListLoading(false);
     }
-  }, [listParams]);
+  }, [listParams, page]);
 
   const changeFilter = (key) => {
     setFilterKey(inboxFilter(key).key);
@@ -653,6 +668,7 @@ export default function Inbox() {
     if (!confirm) return;
     setBusy(true);
     setDetailError('');
+    setNotice('');
     try {
       if (confirm.type === 'message') {
         await api.delete(`/conversations/messages/${confirm.message._id}`);
@@ -675,27 +691,60 @@ export default function Inbox() {
     }
   };
 
+  // Delete Selected: the ids are captured when the dialog OPENS, so exactly the
+  // conversations counted in the dialog are the ones sent — a poll that
+  // reshuffles the page while it is open cannot change what gets deleted.
+  const openDeleteSelected = () => {
+    if (selectedIds.size === 0) return;
+    setBulkError('');
+    setConfirm({ type: 'bulk', ids: [...selectedIds] });
+  };
+
+  // Delete All: its own dialog, the whole Inbox's size, and a typed phrase.
+  const openDeleteAll = () => {
+    setBulkError('');
+    setDeleteAllTyped('');
+    setConfirm({ type: 'all', total: null });
+    requestInboxTotal(api)
+      .then((total) => setConfirm((c) => (c && c.type === 'all' ? { ...c, total } : c)))
+      .catch(() => { /* the dialog still works; it just cannot show the number */ });
+  };
+
   // Delete Selected / Delete All — the same soft delete as the single delete.
   // The lock (with the dialog's busy state) guarantees one request per click.
   const performBulkDelete = async () => {
     if (!confirm || bulkLockRef.current) return;
-    const all = confirm.type === 'all';
-    const ids = all ? null : [...selectedIds];
-    if (!all && ids.length === 0) { setConfirm(null); return; }
     bulkLockRef.current = true;
     setBusy(true);
     setListError('');
+    setBulkError('');
+    // A success message from an earlier action must not sit beside this one's
+    // outcome.
+    setNotice('');
     try {
-      const data = all ? await requestDeleteAll(api) : await requestDeleteSelected(api, ids);
-      // Every requested id is gone from the inbox, including any the server
-      // skipped because someone else had already deleted it.
-      const next = afterBulkDelete({
+      // The request and its outcome are decided in utils/inboxSelection.js
+      // (runBulkDelete), which is tested against the real axios client.
+      const result = await runBulkDelete({
+        api,
+        confirm,
+        typedPhrase: deleteAllTyped,
         conversations,
         selected: selectedIds,
         openId: selectedId,
         page,
-        deletedIds: ids,
       });
+      if (result.skipped) return;
+      if (!result.ok) {
+        // Nothing is reported as deleted. The selection is kept so the
+        // operator can retry, and the list is reloaded so it shows what the
+        // server really holds (a request that failed part-way may still have
+        // deleted some).
+        setBulkError(result.error);
+        setConfirm(null);
+        fetchList({ quiet: true });
+        return;
+      }
+      const { data, next } = result;
       setConversations(next.conversations);
       setSelectedIds(next.selected);
       if (next.closeOpen) {
@@ -708,14 +757,11 @@ export default function Inbox() {
       } catch {
         /* the badge's own poll still catches up */
       }
-      setNotice(`${data.message} Message history was preserved for compliance.`);
+      setNotice(result.notice);
       setConfirm(null);
       // A changed page refetches through its own effect; otherwise refetch here.
       if (next.page !== page) setPage(next.page);
       else fetchList({ quiet: true });
-    } catch (err) {
-      setListError(err.response?.data?.message || 'Delete failed');
-      setConfirm(null);
     } finally {
       bulkLockRef.current = false;
       setBusy(false);
@@ -785,7 +831,7 @@ export default function Inbox() {
             <button
               type="button"
               className="btn btn-sm btn-danger"
-              onClick={() => setConfirm({ type: 'all' })}
+              onClick={openDeleteAll}
               disabled={busy}
             >
               Delete All
@@ -795,6 +841,7 @@ export default function Inbox() {
       </div>
 
       {notice && <div className="alert alert-info"><div>{notice}</div></div>}
+      {bulkError && <div className="alert alert-error" role="alert"><div>{bulkError}</div></div>}
 
       <div className={layoutClass}>
         {/* Drawers (narrow screens) sit over the chat; this closes them. */}
@@ -851,25 +898,33 @@ export default function Inbox() {
             {isAdmin && conversations.length > 0 && !listLoading && (() => {
               const visibleIds = conversations.map((c) => c._id);
               const state = selectAllState(selectedIds, visibleIds);
+              // Page-scoped, and labelled as such: see selectionSummary.
+              const summary = selectionSummary({
+                selectedCount: selectedIds.size,
+                pageCount: visibleIds.length,
+                total: pagination.total,
+                pages: pagination.pages,
+              });
               return (
                 <div className="convo-bulk">
                   <label className="checkbox-field">
                     <input
                       type="checkbox"
-                      aria-label="Select all conversations on this page"
+                      aria-label={`Select all ${visibleIds.length} conversations on this page`}
                       checked={state === 'all'}
                       ref={(el) => { if (el) el.indeterminate = state === 'some'; }}
                       onChange={() => setSelectedIds((prev) => toggleSelectAll(prev, visibleIds))}
                       disabled={busy}
                     />
-                    <span>{selectedIds.size > 0 ? `${selectedIds.size} selected` : 'Select all'}</span>
+                    <span>{summary.label}</span>
                   </label>
+                  {summary.hint && <div className="muted small convo-bulk-hint">{summary.hint}</div>}
                   {selectedIds.size > 0 && (
                     <div className="row-actions">
                       <button
                         type="button"
                         className="btn btn-sm btn-danger"
-                        onClick={() => setConfirm({ type: 'bulk' })}
+                        onClick={openDeleteSelected}
                         disabled={busy}
                       >
                         Delete Selected
@@ -1369,23 +1424,33 @@ export default function Inbox() {
         <ConfirmDialog
           title={
             confirm.type === 'message' ? 'Delete this message?'
-              : confirm.type === 'bulk' ? `Delete ${selectedIds.size} conversation${selectedIds.size === 1 ? '' : 's'}?`
-              : confirm.type === 'all' ? 'Delete all conversations?'
+              : confirm.type === 'bulk' ? deleteSelectedTitle(confirm.ids.length)
+              : confirm.type === 'all' ? deleteAllTitle(confirm.total)
               : 'Delete this conversation?'
           }
           confirmLabel={confirm.type === 'all' ? 'Delete All' : confirm.type === 'bulk' ? 'Delete Selected' : 'Delete'}
           busy={busy}
+          confirmDisabled={confirm.type === 'all' && !deleteAllPhraseMatches(deleteAllTyped)}
           onConfirm={confirm.type === 'bulk' || confirm.type === 'all' ? performBulkDelete : performDelete}
           onClose={() => { if (!busy) setConfirm(null); }}
           message={
             confirm.type === 'bulk' || confirm.type === 'all' ? (
               <>
                 <p>{confirm.type === 'all' ? DELETE_ALL_CONFIRM : DELETE_SELECTED_CONFIRM}</p>
-                <p className="muted small">
-                  They are removed from the Inbox. Contacts, campaigns, enrollments and follow-ups are
-                  not affected, and message records (including opt-out history) are kept for
-                  compliance.
-                </p>
+                <p className="muted small">{DELETE_PRESERVED_NOTE}</p>
+                {confirm.type === 'all' && (
+                  <label className="field">
+                    <span>Type {DELETE_ALL_PHRASE} to confirm</span>
+                    <input
+                      value={deleteAllTyped}
+                      onChange={(e) => setDeleteAllTyped(e.target.value)}
+                      autoComplete="off"
+                      spellCheck={false}
+                      disabled={busy}
+                      autoFocus
+                    />
+                  </label>
+                )}
               </>
             ) : confirm.type === 'message' ? (
               <p>

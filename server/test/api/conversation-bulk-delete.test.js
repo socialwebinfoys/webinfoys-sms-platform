@@ -175,6 +175,32 @@ describe('Delete Selected', () => {
     assert.equal(conversations[1].deletedAt, null);
   });
 
+  test('every write is scoped to one requested id — never a collection-wide update', async () => {
+    await bulk({ ids: [idOf(0), idOf(2)] });
+    const calls = Conversation.__calls.filter((c) => ['updateMany', 'updateOne', 'findOneAndUpdate', 'deleteMany', 'deleteOne'].includes(c.method));
+    assert.equal(calls.filter((c) => c.method !== 'findOneAndUpdate').length, 0, 'no updateMany/deleteMany for Delete Selected');
+    assert.deepEqual(
+      calls.map((c) => String(c.args[0]._id)).sort(),
+      [idOf(0), idOf(2)].sort(),
+      'one conditional update per requested id, filtered by that _id'
+    );
+    for (const c of calls) assert.equal(c.args[0].deletedAt, null, 'only a not-yet-deleted thread can match');
+  });
+
+  test('a large page selection deletes exactly those ids and leaves the rest of the inbox', async () => {
+    // 25 threads = two pages of 20; the operator selected all of page 1.
+    conversations = Array.from({ length: 25 }, (_, i) =>
+      fakeDoc(f.conversation({ _id: f.oid(), contactPhone: `+1415555${String(i).padStart(4, '0')}`, updatedAt: new Date(0) }))
+    );
+    const pageOne = conversations.slice(0, 20).map((c) => String(c._id));
+    const res = await bulk({ ids: pageOne });
+    assert.equal(res.status, 200);
+    assert.equal(res.body.deleted, 20);
+    assert.deepEqual([...res.body.deletedIds].sort(), [...pageOne].sort());
+    assert.ok(conversations.slice(0, 20).every((c) => c.deletedAt));
+    assert.ok(conversations.slice(20).every((c) => c.deletedAt === null), 'page 2 is untouched');
+  });
+
   test('writes the existing conversation.deleted audit event per thread, marked bulk', async () => {
     await bulk({ ids: [idOf(0), idOf(1)] });
     const events = logged.filter((e) => e.eventType === 'conversation.deleted');

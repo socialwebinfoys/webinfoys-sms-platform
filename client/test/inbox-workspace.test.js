@@ -72,9 +72,10 @@ beforeEach(() => { calls = []; });
 
 // ---------------------------------------------------------------------------
 describe('the filter dropdown', () => {
-  test('offers exactly the seven filters, in order', () => {
+  test('offers exactly the eight filters, in order', () => {
     assert.deepEqual(INBOX_FILTERS.map((f) => f.label), [
       'All messages',
+      'Delivered',
       'Undelivered',
       'STOP / Opted out',
       'Unread',
@@ -83,13 +84,14 @@ describe('the filter dropdown', () => {
       'Closed',
     ]);
     assert.equal(DEFAULT_INBOX_FILTER, 'all');
-    assert.equal(new Set(INBOX_FILTERS.map((f) => f.key)).size, 7);
+    assert.equal(new Set(INBOX_FILTERS.map((f) => f.key)).size, 8);
   });
 
   test('each filter maps to the query parameters the server understands', () => {
     const params = Object.fromEntries(INBOX_FILTERS.map((f) => [f.key, f.params]));
     assert.deepEqual(params, {
       all: {},
+      delivered: { delivery: 'delivered' },
       undelivered: { delivery: 'undelivered' },
       optedOut: { optedOut: 'true' },
       unread: { unread: 'true' },
@@ -109,7 +111,7 @@ describe('the filter dropdown', () => {
     for (const f of INBOX_FILTERS) {
       await api.get('/conversations', { params: conversationListParams({ filterKey: f.key, search: '  415 ', page: 2, limit: 20 }) });
     }
-    assert.equal(calls.length, 7);
+    assert.equal(calls.length, 8);
     calls.forEach((c, i) => {
       assert.equal(c.url, '/conversations');
       assert.deepEqual(c.params, { ...INBOX_FILTERS[i].params, search: '415', page: 2, limit: 20 });
@@ -293,7 +295,7 @@ describe('Inbox render', () => {
 // ---------------------------------------------------------------------------
 describe('Inbox.jsx wiring', () => {
   const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
-  const fetchList = code.match(/const fetchList = useCallback\(async \(\{ quiet = false \} = \{\}\) => \{([\s\S]*?)\n {2}\}, \[listParams\]\);/);
+  const fetchList = code.match(/const fetchList = useCallback\(async \(\{ quiet = false \} = \{\}\) => \{([\s\S]*?)\n {2}\}, \[listParams, page\]\);/);
   const toggle = code.match(/const togglePanel = \(panel\) => \{([\s\S]*?)\n {2}\};/);
 
   test('only the newest list request may update the list (fast filter switches)', () => {
@@ -334,7 +336,7 @@ describe('Inbox.jsx wiring', () => {
 
   test('Delete chat and Delete All are still behind the confirmation dialog', () => {
     assert.match(code, /onClick=\{\(\) => setConfirm\(\{ type: 'chat' \}\)\}/);
-    assert.match(code, /onClick=\{\(\) => setConfirm\(\{ type: 'all' \}\)\}/);
+    assert.match(code, /onClick=\{openDeleteAll\}/);
   });
 
   test('only the Inbox route gets the full-height workspace', () => {

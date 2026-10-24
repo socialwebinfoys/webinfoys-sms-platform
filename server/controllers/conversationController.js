@@ -34,13 +34,23 @@ const NOT_DELETED = { deletedAt: null };
 // one of these.
 const UNDELIVERED_STATUSES = ['undelivered', 'failed'];
 
-// Contacts that have at least one visible outbound message that failed. One
-// distinct() over the { status, contact } index — failed messages are a small
-// slice of the log — rather than a per-conversation lookup.
-async function contactsWithUndelivered() {
+// Twilio's confirmed-delivery state, written only by a delivery receipt from
+// the status callback. 'sent', 'queued' and 'simulated' are NOT delivery: the
+// carrier never confirmed them.
+const DELIVERED_STATUSES = ['delivered'];
+
+// Contacts that have at least one visible OUTBOUND message in one of
+// `statuses`. One distinct() over the { status, contact } index rather than a
+// per-conversation lookup.
+//
+// Delivered and Undelivered both mean "has at least one such message", so a
+// thread with a delivered message AND a failed one is listed under both: each
+// filter answers "did this happen in this conversation?", and neither hides a
+// thread the other shows.
+async function contactsWithOutboundStatus(statuses) {
   return SMSMessage.distinct('contact', {
     direction: 'outbound',
-    status: { $in: UNDELIVERED_STATUSES },
+    status: { $in: statuses },
     ...NOT_DELETED,
   });
 }
@@ -75,10 +85,11 @@ async function buildConversationFilter(req) {
     else if (a === 'none') filter.assignedTo = null;
     else filter.assignedTo = a;
   }
-  // delivery=undelivered | optedOut=true narrow by contact. Both may be given;
-  // the thread must then satisfy both.
+  // delivery=delivered|undelivered and optedOut=true narrow by contact. Both
+  // may be given; the thread must then satisfy both.
   const contactSets = [];
-  if (req.query.delivery === 'undelivered') contactSets.push(await contactsWithUndelivered());
+  if (req.query.delivery === 'delivered') contactSets.push(await contactsWithOutboundStatus(DELIVERED_STATUSES));
+  if (req.query.delivery === 'undelivered') contactSets.push(await contactsWithOutboundStatus(UNDELIVERED_STATUSES));
   if (req.query.optedOut === 'true') contactSets.push(await contactsOptedOut());
   if (contactSets.length) {
     let ids = contactSets[0];
@@ -99,7 +110,8 @@ async function buildConversationFilter(req) {
 }
 
 // GET /api/conversations
-// Filters: status, unread, needsReply, assigned, delivery, optedOut, search;
+// Filters: status, unread, needsReply, assigned, delivery (delivered |
+// undelivered), optedOut, search;
 // paginated.
 async function listConversations(req, res, next) {
   try {

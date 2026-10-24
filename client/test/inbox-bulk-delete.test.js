@@ -116,15 +116,20 @@ describe('selection', () => {
 
 // ---------------------------------------------------------------------------
 describe('confirmation', () => {
-  test('the exact wording', () => {
+  test('the exact wording: which conversations, and that messages are KEPT', () => {
     assert.equal(
       DELETE_SELECTED_CONFIRM,
-      'Delete the selected conversations and their messages? This cannot be undone.'
+      'Only the conversations you ticked on this page are removed from the Inbox. Other pages are not affected.'
     );
     assert.equal(
       DELETE_ALL_CONFIRM,
-      'Delete all Inbox conversations and their messages? This cannot be undone.'
+      'Every conversation in the Inbox is removed — on every page and in every filter, not just the ones you can see.'
     );
+    // The old wording said "and their messages", which was false: both actions
+    // are soft deletes and every message (STOP/START included) is preserved.
+    for (const text of [DELETE_SELECTED_CONFIRM, DELETE_ALL_CONFIRM]) {
+      assert.doesNotMatch(text, /their messages/);
+    }
   });
 
   test('while the request runs, both dialog buttons are disabled', () => {
@@ -308,7 +313,7 @@ describe('Inbox.jsx wiring', () => {
     assert.match(bulkFn, /if \(!confirm \|\| bulkLockRef\.current\) return;/);
     assert.match(bulkFn, /bulkLockRef\.current = true;/);
     assert.match(bulkFn, /finally \{\s*bulkLockRef\.current = false;\s*setBusy\(false\);/);
-    assert.match(source, /busy=\{busy\}\s*onConfirm=\{confirm\.type === 'bulk' \|\| confirm\.type === 'all' \? performBulkDelete : performDelete\}/);
+    assert.match(source, /busy=\{busy\}[\s\S]{0,140}onConfirm=\{confirm\.type === 'bulk' \|\| confirm\.type === 'all' \? performBulkDelete : performDelete\}/);
   });
 
   test('the dialog cannot be dismissed mid-request', () => {
@@ -316,8 +321,10 @@ describe('Inbox.jsx wiring', () => {
   });
 
   test('both bulk actions only ever run from the confirmation dialog', () => {
-    assert.match(source, /onClick=\{\(\) => setConfirm\(\{ type: 'bulk' \}\)\}/);
-    assert.match(source, /onClick=\{\(\) => setConfirm\(\{ type: 'all' \}\)\}/);
+    assert.match(source, /onClick=\{openDeleteSelected\}/);
+    assert.match(source, /onClick=\{openDeleteAll\}/);
+    assert.match(source, /setConfirm\(\{ type: 'bulk', ids: \[\.\.\.selectedIds\] \}\);/);
+    assert.match(source, /setConfirm\(\{ type: 'all', total: null \}\);/);
     // performBulkDelete is referenced once — as the dialog's onConfirm.
     assert.equal((source.match(/performBulkDelete/g) || []).length, 2, 'declaration + onConfirm only');
   });

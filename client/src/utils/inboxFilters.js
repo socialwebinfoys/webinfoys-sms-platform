@@ -5,8 +5,12 @@
 //
 //   all          -> nothing: every visible thread, open or closed, delivered,
 //                   undelivered or opted out
+//   delivered    -> delivery=delivered: the contact has an outbound message
+//                   whose Twilio status is 'delivered' (a carrier receipt;
+//                   'sent'/'queued'/'simulated' do not count)
 //   undelivered  -> delivery=undelivered: the contact has an outbound message
 //                   whose Twilio status is 'failed' or 'undelivered'
+//                   A thread with both kinds is listed under both.
 //   optedOut     -> optedOut=true: the contact's consent flag (Contact.optedOut)
 //   unread       -> unread=true: unreadCount > 0
 //   needsReply   -> needsReply=true: the last message was inbound
@@ -19,6 +23,13 @@ export const INBOX_FILTERS = [
     params: {},
     empty: 'No conversations yet',
     hint: 'Inbound replies and outbound messages will appear here as conversations.',
+  },
+  {
+    key: 'delivered',
+    label: 'Delivered',
+    params: { delivery: 'delivered' },
+    empty: 'No delivered conversations',
+    hint: 'No conversation has an outbound message the carrier confirmed as delivered yet.',
   },
   {
     key: 'undelivered',

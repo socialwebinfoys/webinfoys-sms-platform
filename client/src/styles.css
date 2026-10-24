@@ -2632,3 +2632,11 @@ select.input option {
 .table-wrap {
   -webkit-overflow-scrolling: touch;
 }
+
+/* Inbox: "Other pages are not selected" sits on its own line under the
+   Select All row, so a page-scoped selection is never mistaken for all. */
+.convo-bulk-hint {
+  flex-basis: 100%;
+  order: 3;
+  margin-top: -2px;
+}

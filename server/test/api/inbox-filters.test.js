@@ -4,11 +4,13 @@
 // regex, multi-key sort, distinct).
 //
 // What is proved:
-//   * each of the Inbox's seven filters returns exactly the threads it should,
+//   * each of the Inbox's eight filters returns exactly the threads it should,
 //     from the real schema fields — delivery status on SMSMessage, consent on
 //     Contact.optedOut, and the thread's own unread/needs-reply/assignee/status;
-//   * a delivered message is never "undelivered", and a soft-deleted failure
-//     does not count;
+//   * a delivered message is never "undelivered", only a delivery receipt
+//     (status 'delivered') counts as delivered, and a soft-deleted message
+//     counts for neither;
+//   * a thread with both a delivered and a failed message is in BOTH filters;
 //   * opted-out threads stay listed, and their STOP history stays readable;
 //   * search narrows every filter;
 //   * paging the list and paging a thread's history never repeats or drops a
@@ -96,7 +98,12 @@ thread('Undelivered Uma', { msgs: [{ status: 'undelivered', errorCode: 30005 }] 
 // Their only failure was soft-deleted by an admin — hidden, so it does not count.
 thread('Hidden-failure Hal', { msgs: [{ status: 'failed', deletedAt: at(9) }, { status: 'delivered' }] });
 // An INBOUND row with an odd status is not an outbound delivery failure.
-thread('Inbound Ivy', { msgs: [{ direction: 'inbound', status: 'failed' }] });
+// INBOUND rows are never outbound delivery results, whatever their status.
+thread('Inbound Ivy', { msgs: [{ direction: 'inbound', status: 'failed' }, { direction: 'inbound', status: 'delivered' }] });
+// Sent but never confirmed by the carrier: neither delivered nor undelivered.
+thread('Sent-only Sid', { msgs: [{ status: 'sent' }, { status: 'queued' }, { status: 'simulated' }] });
+// Their only delivered message was soft-deleted — hidden, so it does not count.
+thread('Hidden-delivery Hope', { msgs: [{ status: 'delivered', deletedAt: at(9) }] });
 thread('Stopped Sam', {
   contact: { optedOut: true, optedOutAt: at(5), optOutSource: 'keyword' },
   msgs: [{ status: 'delivered' }, { direction: 'inbound', status: 'received', body: 'STOP' }],
@@ -130,9 +137,10 @@ before(async () => {
 });
 after(async () => { await app.close(); });
 
-// The Inbox dropdown's seven options, exactly as the client sends them.
+// The Inbox dropdown's eight options, exactly as the client sends them.
 const FILTERS = {
   all: {},
+  delivered: { delivery: 'delivered' },
   undelivered: { delivery: 'undelivered' },
   optedOut: { optedOut: 'true' },
   unread: { unread: 'true' },
@@ -148,11 +156,36 @@ async function names(params, { limit = 100 } = {}) {
   return { names: res.body.data.map((c) => c.contactName).sort(), body: res.body };
 }
 
-describe('the seven Inbox filters', () => {
+describe('the eight Inbox filters', () => {
   test('All messages: every visible thread — delivered, undelivered, opted out, open and closed', async () => {
     const { names: got, body } = await names(FILTERS.all);
     assert.deepEqual(got, [...ALL_VISIBLE].sort());
     assert.equal(body.pagination.total, ALL_VISIBLE.length);
+  });
+
+  test('Delivered: only threads with a visible OUTBOUND message the carrier confirmed delivered', async () => {
+    const { names: got, body } = await names(FILTERS.delivered);
+    assert.deepEqual(got, ['Delivered Dana', 'Failed Fay', 'Hidden-failure Hal', 'Stopped Sam']);
+    assert.equal(body.pagination.total, 4, 'the count matches the rows');
+  });
+
+  test('sent, queued, simulated, inbound and soft-deleted messages are not "delivered"', async () => {
+    const { names: got } = await names(FILTERS.delivered);
+    for (const no of ['Sent-only Sid', 'Hidden-delivery Hope', 'Inbound Ivy', 'Undelivered Uma', 'Carrier Cleo', 'Closed Cal']) {
+      assert.equal(got.includes(no), false, no);
+    }
+  });
+
+  test('a thread with a delivered AND a failed message is listed under both filters, once each', async () => {
+    const delivered = (await names(FILTERS.delivered)).names;
+    const undelivered = (await names(FILTERS.undelivered)).names;
+    assert.equal(delivered.filter((n) => n === 'Failed Fay').length, 1);
+    assert.equal(undelivered.filter((n) => n === 'Failed Fay').length, 1);
+    assert.equal((await names(FILTERS.all)).names.filter((n) => n === 'Failed Fay').length, 1);
+  });
+
+  test('Delivered combines with the opt-out filter like Undelivered does', async () => {
+    assert.deepEqual((await names({ delivery: 'delivered', optedOut: 'true' })).names, ['Stopped Sam']);
   });
 
   test('Undelivered: only threads with a visible failed/undelivered OUTBOUND message', async () => {
@@ -163,7 +196,7 @@ describe('the seven Inbox filters', () => {
 
   test('a delivered message is never classified as undelivered', async () => {
     const { names: got } = await names(FILTERS.undelivered);
-    for (const ok of ['Delivered Dana', 'Hidden-failure Hal', 'Inbound Ivy', 'Stopped Sam']) {
+    for (const ok of ['Delivered Dana', 'Hidden-failure Hal', 'Inbound Ivy', 'Stopped Sam', 'Sent-only Sid', 'Hidden-delivery Hope']) {
       assert.equal(got.includes(ok), false, ok);
     }
   });
@@ -204,6 +237,7 @@ describe('search works with every filter', () => {
   test('a name search narrows each filter to its matching rows', async () => {
     const expected = {
       all: ['Carrier Cleo', 'Closed Cal'],
+      delivered: [],
       undelivered: ['Carrier Cleo', 'Closed Cal'],
       optedOut: ['Carrier Cleo'],
       unread: [],
